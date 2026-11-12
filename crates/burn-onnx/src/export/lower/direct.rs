@@ -3,15 +3,8 @@
 //! Input and output ordering is taken directly from [`burn::backend::ir::OperationIr`].
 
 use burn::backend::ir::{
-<<<<<<< HEAD
-<<<<<<< HEAD
-    ActivationOperationIr, DimOpIr, FloatOperationIr, IntOperationIr, OperationIr,
-=======
-    ActivationOperationIr, BoolOperationIr, FloatOperationIr, IntOperationIr, OperationIr,
->>>>>>> af690a50 (Export: lower Int/Bool IntoFloat as ONNX Cast nodes)
-=======
-    ActivationOperationIr, FloatOperationIr, IntOperationIr, OperationIr, ScalarIr, UnaryOpIr,
->>>>>>> fe4b73c9 (Export: lower Gelu as its erf decomposition)
+    ActivationOperationIr, BoolOperationIr, DimOpIr, FloatOperationIr, IntOperationIr, OperationIr,
+    ScalarIr, UnaryOpIr,
 };
 
 use crate::export::ExportError;
@@ -24,8 +17,10 @@ pub(super) fn lower(
     index: usize,
     operation: &OperationIr,
 ) -> Result<bool, ExportError> {
-<<<<<<< HEAD
-<<<<<<< HEAD
+    if let OperationIr::Activation(ActivationOperationIr::Gelu(operation)) = operation {
+        lower_gelu(context, index, operation)?;
+        return Ok(true);
+    }
     if let Some((operation, op_type)) = match operation {
         OperationIr::Activation(ActivationOperationIr::Softmax(operation)) => {
             Some((operation, "Softmax"))
@@ -39,7 +34,8 @@ pub(super) fn lower(
         _ => None,
     } {
         lower_normalized_exponential(context, index, operation, op_type)?;
-=======
+        return Ok(true);
+    }
     if let Some(cast) = match operation {
         OperationIr::Int(IntOperationIr::IntoFloat(cast)) => Some(cast),
         OperationIr::Bool(BoolOperationIr::IntoFloat(cast)) => Some(cast),
@@ -49,11 +45,6 @@ pub(super) fn lower(
         let output = context.tensor_name(cast.out.id);
         context.node(format!("node_{index}"), "Cast", vec![input], vec![output]);
         context.int_attribute("to", onnx_dtype_parts(cast.out.id, cast.out.dtype)? as i64);
->>>>>>> af690a50 (Export: lower Int/Bool IntoFloat as ONNX Cast nodes)
-=======
-    if let OperationIr::Activation(ActivationOperationIr::Gelu(operation)) = operation {
-        lower_gelu(context, index, operation)?;
->>>>>>> fe4b73c9 (Export: lower Gelu as its erf decomposition)
         return Ok(true);
     }
     let op_type = match operation {
@@ -86,7 +77,6 @@ pub(super) fn lower(
     Ok(true)
 }
 
-<<<<<<< HEAD
 /// Lower a per-axis normalized exponential (`Softmax`, `LogSoftmax`,
 /// `Softmin`) whose opset 13+ form carries the axis as an attribute.
 fn lower_normalized_exponential(
@@ -99,7 +89,9 @@ fn lower_normalized_exponential(
     let output = context.tensor_name(operation.out.id);
     context.node(format!("node_{index}"), op_type, vec![input], vec![output]);
     context.int_attribute("axis", operation.axis as i64);
-=======
+    Ok(())
+}
+
 /// Lower `Gelu` via its exact erf form `0.5 * x * (1 + erf(x / sqrt(2)))`.
 ///
 /// ONNX `Gelu` is opset-20 and the exporter pins opset 18, so the native
@@ -172,6 +164,5 @@ fn lower_gelu(
         vec![gated_name, half_name],
         vec![output],
     );
->>>>>>> fe4b73c9 (Export: lower Gelu as its erf decomposition)
     Ok(())
 }

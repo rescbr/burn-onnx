@@ -129,17 +129,14 @@ impl AxisTracker {
             OperationIr::Activation(
                 ActivationOperationIr::Relu(operation) | ActivationOperationIr::Sigmoid(operation),
             ) => self.same_axes(&operation.input, &operation.out),
-<<<<<<< HEAD
             OperationIr::Activation(
                 ActivationOperationIr::Softmax(operation)
                 | ActivationOperationIr::LogSoftmax(operation)
                 | ActivationOperationIr::Softmin(operation),
             ) => self.same_axes(&operation.input, &operation.out),
-=======
             OperationIr::Activation(ActivationOperationIr::Gelu(operation)) => {
                 self.same_axes(&operation.input, &operation.out)
             }
->>>>>>> fe4b73c9 (Export: lower Gelu as its erf decomposition)
             OperationIr::Module(operation) => self.transfer_module(operation),
             _ => {}
         }

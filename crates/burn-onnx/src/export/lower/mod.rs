@@ -314,13 +314,23 @@ mod tests {
     use super::*;
     use burn::backend::Shape;
     use burn::backend::ir::{
-        BinaryOpIr, GraphIr, NumericOperationIr, ReduceDimOpIr, ReduceDimWithIndicesOpIr,
+        ActivationOperationIr, BaseOperationIr, BinaryOpIr, CastOpIr, ClampOpIr, DimOpIr,
+        FloatOperationIr, GraphIr, IntOperationIr, NumericOperationIr, PermuteOpIr, ReduceDimOpIr,
+        ReduceDimWithIndicesOpIr, ScalarIr, ShapeOpIr, SwapDimsOpIr, UnaryOpIr,
     };
-    use onnx_ir::ModelProto;
+    use onnx_ir::{ModelProto, NodeProto};
     use protobuf::Message;
 
     fn tensor(id: u64) -> TensorIr {
         TensorIr::uninit(TensorId::new(id), Shape::new([2, 3]), DType::F32)
+    }
+
+    fn perm_attribute(node: &NodeProto) -> Vec<i64> {
+        node.attribute
+            .iter()
+            .find(|attribute| attribute.name == "perm")
+            .map(|attribute| attribute.ints.clone())
+            .unwrap_or_default()
     }
 
     #[test]
@@ -533,6 +543,370 @@ mod tests {
                 .i,
             1
         );
+    }
+
+    #[test]
+    fn lowers_softmax_with_axis_attribute() {
+        let input = tensor(1);
+        let output = TensorIr::uninit(TensorId::new(2), Shape::new([2, 3]), DType::F32);
+        let graph = GraphIr::new(vec![OperationIr::Activation(
+            ActivationOperationIr::Softmax(DimOpIr {
+                input,
+                out: output,
+                axis: 1,
+            }),
+        )]);
+        let graph = ResolvedExportGraph {
+            graph,
+            shapes: vec![],
+            dynamic_axes: vec![],
+        };
+        let runtime_inputs = graph.graph.inputs.clone();
+        let model = export_graph_with_bindings_and_opset(
+            &graph,
+            &BTreeMap::new(),
+            &runtime_inputs,
+            &HashMap::new(),
+            Opset::default(),
+        )
+        .unwrap();
+        let model = ModelProto::parse_from_bytes(model.as_bytes()).unwrap();
+
+        assert_eq!(model.graph.node.len(), 1);
+        assert_eq!(model.graph.node[0].op_type, "Softmax");
+        assert_eq!(model.graph.node[0].input, ["tensor_1"]);
+        assert_eq!(model.graph.node[0].output, ["tensor_2"]);
+        assert_eq!(
+            model.graph.node[0]
+                .attribute
+                .iter()
+                .find(|attribute| attribute.name == "axis")
+                .unwrap()
+                .i,
+            1
+        );
+    }
+
+    #[test]
+    fn lowers_log_softmax_and_softmin_with_axis_attribute() {
+        for (operation, op_type) in [
+            (
+                ActivationOperationIr::LogSoftmax(DimOpIr {
+                    input: tensor(1),
+                    out: TensorIr::uninit(TensorId::new(2), Shape::new([2, 3]), DType::F32),
+                    axis: 0,
+                }),
+                "LogSoftmax",
+            ),
+            (
+                ActivationOperationIr::Softmin(DimOpIr {
+                    input: tensor(1),
+                    out: TensorIr::uninit(TensorId::new(2), Shape::new([2, 3]), DType::F32),
+                    axis: 1,
+                }),
+                "Softmin",
+            ),
+        ] {
+            let graph = GraphIr::new(vec![OperationIr::Activation(operation)]);
+            let graph = ResolvedExportGraph {
+                graph,
+                shapes: vec![],
+                dynamic_axes: vec![],
+            };
+            let runtime_inputs = graph.graph.inputs.clone();
+            let model = export_graph_with_bindings_and_opset(
+                &graph,
+                &BTreeMap::new(),
+                &runtime_inputs,
+                &HashMap::new(),
+                Opset::default(),
+            )
+            .unwrap();
+            let model = ModelProto::parse_from_bytes(model.as_bytes()).unwrap();
+
+            assert_eq!(model.graph.node.len(), 1);
+            assert_eq!(model.graph.node[0].op_type, op_type);
+            assert!(
+                model.graph.node[0]
+                    .attribute
+                    .iter()
+                    .any(|attribute| attribute.name == "axis")
+            );
+        }
+    }
+
+    #[test]
+    fn lowers_recip_as_reciprocal_node() {
+        let graph = GraphIr::new(vec![OperationIr::Float(
+            DType::F32,
+            FloatOperationIr::Recip(UnaryOpIr {
+                input: tensor(1),
+                out: tensor(2),
+            }),
+        )]);
+        let graph = ResolvedExportGraph {
+            graph,
+            shapes: vec![],
+            dynamic_axes: vec![],
+        };
+        let runtime_inputs = graph.graph.inputs.clone();
+        let model = export_graph_with_bindings_and_opset(
+            &graph,
+            &BTreeMap::new(),
+            &runtime_inputs,
+            &HashMap::new(),
+            Opset::default(),
+        )
+        .unwrap();
+        let model = ModelProto::parse_from_bytes(model.as_bytes()).unwrap();
+
+        assert_eq!(model.graph.node.len(), 1);
+        assert_eq!(model.graph.node[0].op_type, "Reciprocal");
+        assert_eq!(model.graph.node[0].input, ["tensor_1"]);
+        assert_eq!(model.graph.node[0].output, ["tensor_2"]);
+    }
+
+    #[test]
+    fn lowers_expand_with_resolved_shape_input() {
+        let input = tensor(1);
+        let output = TensorIr::uninit(TensorId::new(2), Shape::new([2, 3]), DType::F32);
+        let graph = GraphIr::new(vec![OperationIr::BaseFloat(BaseOperationIr::Expand(
+            ShapeOpIr { input, out: output },
+        ))]);
+        let graph = ResolvedExportGraph {
+            graph,
+            shapes: vec![crate::export::resolved::ResolvedShape {
+                operation: 0,
+                tensor: TensorId::new(2),
+                dimensions: vec![
+                    crate::export::resolved::ShapeExpr::Static(2),
+                    crate::export::resolved::ShapeExpr::Static(3),
+                ],
+            }],
+            dynamic_axes: vec![],
+        };
+        let runtime_inputs = graph.graph.inputs.clone();
+        let model = export_graph_with_bindings_and_opset(
+            &graph,
+            &BTreeMap::new(),
+            &runtime_inputs,
+            &HashMap::new(),
+            Opset::default(),
+        )
+        .unwrap();
+        let model = ModelProto::parse_from_bytes(model.as_bytes()).unwrap();
+
+        assert_eq!(model.graph.node.len(), 1);
+        assert_eq!(model.graph.node[0].op_type, "Expand");
+        assert_eq!(model.graph.node[0].input, ["tensor_1", "node_0_shape"]);
+        assert_eq!(model.graph.node[0].output, ["tensor_2"]);
+        let shape = model
+            .graph
+            .initializer
+            .iter()
+            .find(|initializer| initializer.name == "node_0_shape")
+            .unwrap();
+        assert_eq!(shape.dims, [2]);
+        assert_eq!(
+            shape.raw_data.as_ref(),
+            [2_i64, 3_i64]
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<u8>>()
+        );
+    }
+
+    #[test]
+    fn lowers_int_into_float_as_cast_node() {
+        let input = TensorIr::uninit(TensorId::new(1), Shape::new([2, 3]), DType::I64);
+        let output = TensorIr::uninit(TensorId::new(2), Shape::new([2, 3]), DType::F32);
+        let graph = GraphIr::new(vec![OperationIr::Int(IntOperationIr::IntoFloat(
+            CastOpIr { input, out: output },
+        ))]);
+        let graph = ResolvedExportGraph {
+            graph,
+            shapes: vec![],
+            dynamic_axes: vec![],
+        };
+        let runtime_inputs = graph.graph.inputs.clone();
+        let model = export_graph_with_bindings_and_opset(
+            &graph,
+            &BTreeMap::new(),
+            &runtime_inputs,
+            &HashMap::new(),
+            Opset::default(),
+        )
+        .unwrap();
+        let model = ModelProto::parse_from_bytes(model.as_bytes()).unwrap();
+
+        assert_eq!(model.graph.node.len(), 1);
+        assert_eq!(model.graph.node[0].op_type, "Cast");
+        assert_eq!(model.graph.node[0].input, ["tensor_1"]);
+        assert_eq!(model.graph.node[0].output, ["tensor_2"]);
+        assert_eq!(
+            model.graph.node[0]
+                .attribute
+                .iter()
+                .find(|attribute| attribute.name == "to")
+                .unwrap()
+                .i,
+            1
+        );
+    }
+
+    #[test]
+    fn lowers_clamp_as_clip_with_scalar_bounds() {
+        let input = tensor(1);
+        let output = TensorIr::uninit(TensorId::new(2), Shape::new([2, 3]), DType::F32);
+        let graph = GraphIr::new(vec![OperationIr::NumericFloat(
+            DType::F32,
+            NumericOperationIr::Clamp(ClampOpIr {
+                tensor: input,
+                min: ScalarIr::new(-1.0, &DType::F32),
+                max: ScalarIr::new(1.0, &DType::F32),
+                out: output,
+            }),
+        )]);
+        let graph = ResolvedExportGraph {
+            graph,
+            shapes: vec![],
+            dynamic_axes: vec![],
+        };
+        let runtime_inputs = graph.graph.inputs.clone();
+        let model = export_graph_with_bindings_and_opset(
+            &graph,
+            &BTreeMap::new(),
+            &runtime_inputs,
+            &HashMap::new(),
+            Opset::default(),
+        )
+        .unwrap();
+        let model = ModelProto::parse_from_bytes(model.as_bytes()).unwrap();
+
+        assert_eq!(model.graph.node.len(), 1);
+        assert_eq!(model.graph.node[0].op_type, "Clip");
+        assert_eq!(
+            model.graph.node[0].input,
+            ["tensor_1", "node_0_min", "node_0_max"]
+        );
+        assert_eq!(model.graph.node[0].output, ["tensor_2"]);
+        for (name, expected) in [("node_0_min", -1.0f32), ("node_0_max", 1.0f32)] {
+            let bound = model
+                .graph
+                .initializer
+                .iter()
+                .find(|initializer| initializer.name == name)
+                .unwrap();
+            assert_eq!(bound.raw_data.as_ref(), expected.to_le_bytes());
+        }
+    }
+
+    #[test]
+    fn lowers_gelu_as_erf_decomposition() {
+        let graph = GraphIr::new(vec![OperationIr::Activation(ActivationOperationIr::Gelu(
+            UnaryOpIr {
+                input: tensor(1),
+                out: tensor(2),
+            },
+        ))]);
+        let graph = ResolvedExportGraph {
+            graph,
+            shapes: vec![],
+            dynamic_axes: vec![],
+        };
+        let runtime_inputs = graph.graph.inputs.clone();
+        let model = export_graph_with_bindings_and_opset(
+            &graph,
+            &BTreeMap::new(),
+            &runtime_inputs,
+            &HashMap::new(),
+            Opset::default(),
+        )
+        .unwrap();
+        let model = ModelProto::parse_from_bytes(model.as_bytes()).unwrap();
+
+        let ops = model
+            .graph
+            .node
+            .iter()
+            .map(|node| node.op_type.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ops, ["Div", "Erf", "Add", "Mul", "Mul"]);
+        assert_eq!(model.graph.node[0].input, ["tensor_1", "node_0_sqrt2"]);
+        assert_eq!(model.graph.node[1].input, ["node_0_scaled"]);
+        assert_eq!(model.graph.node[2].input, ["node_0_erf", "node_0_one"]);
+        assert_eq!(model.graph.node[3].input, ["tensor_1", "node_0_gate"]);
+        assert_eq!(model.graph.node[4].input, ["node_0_gated", "node_0_half"]);
+        assert_eq!(model.graph.node[4].output, ["tensor_2"]);
+    }
+
+    #[test]
+    fn lowers_swap_dims_as_transpose_with_swapped_perm() {
+        let input = tensor(1);
+        let output = TensorIr::uninit(TensorId::new(2), Shape::new([3, 2]), DType::F32);
+        let graph = GraphIr::new(vec![OperationIr::BaseFloat(BaseOperationIr::SwapDims(
+            SwapDimsOpIr {
+                input,
+                out: output,
+                dim1: 0,
+                dim2: 1,
+            },
+        ))]);
+        let graph = ResolvedExportGraph {
+            graph,
+            shapes: vec![],
+            dynamic_axes: vec![],
+        };
+        let runtime_inputs = graph.graph.inputs.clone();
+        let model = export_graph_with_bindings_and_opset(
+            &graph,
+            &BTreeMap::new(),
+            &runtime_inputs,
+            &HashMap::new(),
+            Opset::default(),
+        )
+        .unwrap();
+        let model = ModelProto::parse_from_bytes(model.as_bytes()).unwrap();
+
+        assert_eq!(model.graph.node.len(), 1);
+        assert_eq!(model.graph.node[0].op_type, "Transpose");
+        assert_eq!(model.graph.node[0].input, ["tensor_1"]);
+        assert_eq!(model.graph.node[0].output, ["tensor_2"]);
+        assert_eq!(perm_attribute(&model.graph.node[0]), [1, 0]);
+    }
+
+    #[test]
+    fn lowers_permute_as_transpose_with_verbatim_axes() {
+        let input = tensor(1);
+        let output = TensorIr::uninit(TensorId::new(2), Shape::new([2, 3]), DType::F32);
+        let graph = GraphIr::new(vec![OperationIr::BaseFloat(BaseOperationIr::Permute(
+            PermuteOpIr {
+                input,
+                out: output,
+                axes: vec![2, 0, 1],
+            },
+        ))]);
+        let graph = ResolvedExportGraph {
+            graph,
+            shapes: vec![],
+            dynamic_axes: vec![],
+        };
+        let runtime_inputs = graph.graph.inputs.clone();
+        let model = export_graph_with_bindings_and_opset(
+            &graph,
+            &BTreeMap::new(),
+            &runtime_inputs,
+            &HashMap::new(),
+            Opset::default(),
+        )
+        .unwrap();
+        let model = ModelProto::parse_from_bytes(model.as_bytes()).unwrap();
+
+        assert_eq!(model.graph.node.len(), 1);
+        assert_eq!(model.graph.node[0].op_type, "Transpose");
+        assert_eq!(model.graph.node[0].input, ["tensor_1"]);
+        assert_eq!(model.graph.node[0].output, ["tensor_2"]);
+        assert_eq!(perm_attribute(&model.graph.node[0]), [2, 0, 1]);
     }
 
     #[test]
