@@ -246,6 +246,7 @@ impl AxisTracker {
             FloatOperationIr::Exp(operation)
             | FloatOperationIr::Log(operation)
             | FloatOperationIr::Sqrt(operation)
+            | FloatOperationIr::Recip(operation)
             | FloatOperationIr::Tanh(operation) => self.same_axes(&operation.input, &operation.out),
             FloatOperationIr::Matmul(operation) => {
                 self.matmul(&operation.lhs, &operation.rhs, &operation.out)
