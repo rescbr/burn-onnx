@@ -3,12 +3,16 @@
 //! Input and output ordering is taken directly from [`burn::backend::ir::OperationIr`].
 
 use burn::backend::ir::{
+<<<<<<< HEAD
     ActivationOperationIr, DimOpIr, FloatOperationIr, IntOperationIr, OperationIr,
+=======
+    ActivationOperationIr, BoolOperationIr, FloatOperationIr, IntOperationIr, OperationIr,
+>>>>>>> af690a50 (Export: lower Int/Bool IntoFloat as ONNX Cast nodes)
 };
 
 use crate::export::ExportError;
 
-use super::context::LoweringContext;
+use super::{context::LoweringContext, onnx_dtype_parts};
 
 /// Lower operations whose ONNX form has the same tensor inputs and outputs.
 pub(super) fn lower(
@@ -16,6 +20,7 @@ pub(super) fn lower(
     index: usize,
     operation: &OperationIr,
 ) -> Result<bool, ExportError> {
+<<<<<<< HEAD
     if let Some((operation, op_type)) = match operation {
         OperationIr::Activation(ActivationOperationIr::Softmax(operation)) => {
             Some((operation, "Softmax"))
@@ -29,6 +34,17 @@ pub(super) fn lower(
         _ => None,
     } {
         lower_normalized_exponential(context, index, operation, op_type)?;
+=======
+    if let Some(cast) = match operation {
+        OperationIr::Int(IntOperationIr::IntoFloat(cast)) => Some(cast),
+        OperationIr::Bool(BoolOperationIr::IntoFloat(cast)) => Some(cast),
+        _ => None,
+    } {
+        let input = context.tensor_name(cast.input.id);
+        let output = context.tensor_name(cast.out.id);
+        context.node(format!("node_{index}"), "Cast", vec![input], vec![output]);
+        context.int_attribute("to", onnx_dtype_parts(cast.out.id, cast.out.dtype)? as i64);
+>>>>>>> af690a50 (Export: lower Int/Bool IntoFloat as ONNX Cast nodes)
         return Ok(true);
     }
     let op_type = match operation {
