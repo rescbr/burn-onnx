@@ -51,6 +51,14 @@ pub(super) fn lower(
         lower_reduce(context, index, reduce, "ReduceMean")?;
         return Ok(true);
     }
+    if let NumericOperationIr::MaxDim(reduce) = numeric {
+        lower_reduce(context, index, reduce, "ReduceMax")?;
+        return Ok(true);
+    }
+    if let NumericOperationIr::MinDim(reduce) = numeric {
+        lower_reduce(context, index, reduce, "ReduceMin")?;
+        return Ok(true);
+    }
     if let NumericOperationIr::ArgMax(reduce) = numeric {
         lower_arg(context, index, reduce, "ArgMax")?;
         return Ok(true);

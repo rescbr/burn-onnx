@@ -429,6 +429,61 @@ mod tests {
     }
 
     #[test]
+    fn lowers_max_and_min_dim_as_reduce_nodes() {
+        for (operation, op_type) in [
+            (
+                NumericOperationIr::MaxDim(ReduceDimOpIr {
+                    input: tensor(1),
+                    out: TensorIr::uninit(TensorId::new(2), Shape::new([2, 1]), DType::F32),
+                    axis: 1,
+                    accumulator_len: 3,
+                }),
+                "ReduceMax",
+            ),
+            (
+                NumericOperationIr::MinDim(ReduceDimOpIr {
+                    input: tensor(1),
+                    out: TensorIr::uninit(TensorId::new(2), Shape::new([2, 1]), DType::F32),
+                    axis: 1,
+                    accumulator_len: 3,
+                }),
+                "ReduceMin",
+            ),
+        ] {
+            let graph = GraphIr::new(vec![OperationIr::NumericFloat(DType::F32, operation)]);
+            let graph = ResolvedExportGraph {
+                graph,
+                shapes: vec![],
+                dynamic_axes: vec![],
+            };
+            let runtime_inputs = graph.graph.inputs.clone();
+            let model = export_graph_with_bindings_and_opset(
+                &graph,
+                &BTreeMap::new(),
+                &runtime_inputs,
+                &HashMap::new(),
+                Opset::default(),
+            )
+            .unwrap();
+            let model = ModelProto::parse_from_bytes(model.as_bytes()).unwrap();
+
+            assert_eq!(model.graph.node.len(), 1);
+            assert_eq!(model.graph.node[0].op_type, op_type);
+            assert_eq!(model.graph.node[0].input, ["tensor_1", "node_0_axes"]);
+            assert_eq!(model.graph.node[0].output, ["tensor_2"]);
+            assert_eq!(
+                model.graph.node[0]
+                    .attribute
+                    .iter()
+                    .find(|attribute| attribute.name == "keepdims")
+                    .unwrap()
+                    .i,
+                1
+            );
+        }
+    }
+
+    #[test]
     fn lowers_mean_dim_as_reduce_mean_node() {
         let input = tensor(1);
         let output = TensorIr::uninit(TensorId::new(2), Shape::new([2, 1]), DType::F32);
