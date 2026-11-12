@@ -81,6 +81,65 @@ impl<'a> LoweringContext<'a> {
         node.output = outputs;
     }
 
+    /// Return the resolved dimension expressions for a shape-sensitive
+    /// operation output, if the resolver recorded one.
+    pub(super) fn resolved_dimensions(
+        &self,
+        index: usize,
+        tensor: TensorId,
+    ) -> Option<&[ShapeExpr]> {
+        self.graph
+            .shapes
+            .iter()
+            .find(|shape| shape.operation == index && shape.tensor == tensor)
+            .map(|shape| shape.dimensions.as_slice())
+    }
+
+    /// Materialize one resolved dimension as a 1-element INT64 tensor.
+    ///
+    /// Returns `Ok(None)` for static/inferred dimensions (callers keep their
+    /// constant operands) and a runtime `Shape -> Gather` chain (with an
+    /// `Add(offset)` when the dimension is a lower bound rather than the
+    /// exact value) for dynamic ones — the same mechanism as
+    /// [`Self::shape_input`].
+    pub(super) fn dimension_scalar(
+        &mut self,
+        prefix: &str,
+        dimension: &ShapeExpr,
+        offset: i64,
+    ) -> Result<Option<String>, ExportError> {
+        let (source, axis) = match dimension {
+            ShapeExpr::Static(_) | ShapeExpr::Infer => return Ok(None),
+            ShapeExpr::InputDim { input, axis }
+            | ShapeExpr::TensorDim { tensor: input, axis } => (self.tensor_name(*input), *axis),
+        };
+        let shape_name = format!("{prefix}_source_shape");
+        self.node(shape_name.clone(), "Shape", vec![source], vec![shape_name.clone()]);
+        let indices = format!("{prefix}_axis");
+        self.i64_initializer(indices.clone(), &[axis as i64]);
+        let gathered = format!("{prefix}_dim");
+        self.node(
+            gathered.clone(),
+            "Gather",
+            vec![shape_name, indices],
+            vec![gathered.clone()],
+        );
+        self.int_attribute("axis", 0);
+        if offset == 0 {
+            return Ok(Some(gathered));
+        }
+        let offset_name = format!("{prefix}_offset");
+        self.i64_initializer(offset_name.clone(), &[offset]);
+        let shifted = format!("{prefix}_shifted");
+        self.node(
+            shifted.clone(),
+            "Add",
+            vec![gathered, offset_name],
+            vec![shifted.clone()],
+        );
+        Ok(Some(shifted))
+    }
+
     /// Append an `INT64` initializer containing a one-dimensional value list.
     pub(super) fn i64_initializer(&mut self, name: impl Into<String>, values: &[i64]) {
         let mut tensor = TensorProto::new();

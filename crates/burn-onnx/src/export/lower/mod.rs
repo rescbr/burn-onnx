@@ -316,10 +316,88 @@ mod tests {
     use burn::backend::ir::{
         ActivationOperationIr, BaseOperationIr, BinaryOpIr, CastOpIr, ClampOpIr, DimOpIr,
         FloatOperationIr, GraphIr, IntOperationIr, NumericOperationIr, PermuteOpIr, ReduceDimOpIr,
-        ReduceDimWithIndicesOpIr, ScalarIr, ShapeOpIr, SwapDimsOpIr, UnaryOpIr,
+        ReduceDimWithIndicesOpIr, ScalarIr, ShapeOpIr, SliceOpIr, SwapDimsOpIr, UnaryOpIr,
     };
     use onnx_ir::{ModelProto, NodeProto};
     use protobuf::Message;
+
+    #[test]
+    fn lowers_dynamic_slice_with_shape_derived_ends() {
+        // positions_table[4, 3] sliced to [0..t): the captured bound is the
+        // sample trace's t, so the resolved dimension is dynamic and `ends`
+        // must be computed at runtime (Shape -> Gather), not baked.
+        let input = TensorIr::uninit(TensorId::new(1), Shape::new([4, 3]), DType::F32);
+        let output = TensorIr::uninit(TensorId::new(2), Shape::new([2, 3]), DType::F32);
+        let graph = GraphIr::new(vec![OperationIr::BaseFloat(BaseOperationIr::Slice(
+            SliceOpIr {
+                tensor: input,
+                ranges: vec![burn::backend::Slice {
+                    start: 0,
+                    end: Some(2),
+                    step: 1,
+                }],
+                out: output,
+            },
+        ))]);
+        let graph = ResolvedExportGraph {
+            graph,
+            shapes: vec![crate::export::resolved::ResolvedShape {
+                operation: 0,
+                tensor: TensorId::new(2),
+                dimensions: vec![
+                    crate::export::resolved::ShapeExpr::InputDim {
+                        input: TensorId::new(1),
+                        axis: 0,
+                    },
+                    crate::export::resolved::ShapeExpr::Static(3),
+                ],
+            }],
+            dynamic_axes: vec![],
+        };
+        let runtime_inputs = graph.graph.inputs.clone();
+        let model = export_graph_with_bindings_and_opset(
+            &graph,
+            &BTreeMap::new(),
+            &runtime_inputs,
+            &HashMap::new(),
+            Opset::default(),
+        )
+        .unwrap();
+        let model = ModelProto::parse_from_bytes(model.as_bytes()).unwrap();
+
+        let slice = model
+            .graph
+            .node
+            .iter()
+            .find(|node| node.op_type == "Slice")
+            .unwrap();
+        let ends = &slice.input[2];
+        assert!(
+            !model
+                .graph
+                .initializer
+                .iter()
+                .any(|initializer| initializer.name == *ends),
+            "dynamic slice ends must be a computed tensor, not an initializer"
+        );
+        let ends_concat = model
+            .graph
+            .node
+            .iter()
+            .find(|node| node.op_type == "Concat" && node.output.contains(ends))
+            .expect("ends is assembled by a Concat");
+        assert!(
+            ends_concat
+                .input
+                .iter()
+                .any(|part| model
+                    .graph
+                    .node
+                    .iter()
+                    .any(|node| node.op_type == "Gather" && node.output.contains(part))),
+            "ends derives from a Shape -> Gather chain"
+        );
+    }
 
     fn tensor(id: u64) -> TensorIr {
         TensorIr::uninit(TensorId::new(id), Shape::new([2, 3]), DType::F32)
