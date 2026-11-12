@@ -44,37 +44,11 @@ pub(super) fn lower(
         return Ok(true);
     }
     if let NumericOperationIr::SumDim(reduce) = numeric {
-        if !matches!(
-            reduce.input.dtype,
-            DType::F16
-                | DType::BF16
-                | DType::F32
-                | DType::F64
-                | DType::I32
-                | DType::I64
-                | DType::U32
-                | DType::U64
-        ) {
-            return Err(ExportError::UnsupportedOperation {
-                operation: index,
-                kind: format!(
-                    "ReduceSum with {:?} input in ONNX opset 18",
-                    reduce.input.dtype
-                ),
-            });
-        }
-        let axes_name = format!("node_{index}_axes");
-        context.i64_initializer(axes_name.clone(), &[reduce.axis as i64]);
-        let input = context.tensor_name(reduce.input.id);
-        let output = context.tensor_name(reduce.out.id);
-        context.node(
-            format!("node_{index}"),
-            "ReduceSum",
-            vec![input, axes_name],
-            vec![output],
-        );
-        let kept = reduce.out.shape.num_dims() == reduce.input.shape.num_dims();
-        context.int_attribute("keepdims", kept as i64);
+        lower_reduce(context, index, reduce, "ReduceSum")?;
+        return Ok(true);
+    }
+    if let NumericOperationIr::MeanDim(reduce) = numeric {
+        lower_reduce(context, index, reduce, "ReduceMean")?;
         return Ok(true);
     }
     if let NumericOperationIr::ArgMax(reduce) = numeric {
@@ -116,6 +90,48 @@ pub(super) fn lower(
         .collect();
     context.node(format!("node_{index}"), op_type, inputs, outputs);
     Ok(true)
+}
+
+/// Lower a single-axis reduction (`ReduceSum`, `ReduceMean`) whose opset 18
+/// form takes the reduced axis as a second i64 input.
+fn lower_reduce(
+    context: &mut LoweringContext<'_>,
+    index: usize,
+    reduce: &ReduceDimOpIr,
+    op_type: &'static str,
+) -> Result<(), ExportError> {
+    if !matches!(
+        reduce.input.dtype,
+        DType::F16
+            | DType::BF16
+            | DType::F32
+            | DType::F64
+            | DType::I32
+            | DType::I64
+            | DType::U32
+            | DType::U64
+    ) {
+        return Err(ExportError::UnsupportedOperation {
+            operation: index,
+            kind: format!(
+                "{op_type} with {:?} input in ONNX opset 18",
+                reduce.input.dtype
+            ),
+        });
+    }
+    let axes_name = format!("node_{index}_axes");
+    context.i64_initializer(axes_name.clone(), &[reduce.axis as i64]);
+    let input = context.tensor_name(reduce.input.id);
+    let output = context.tensor_name(reduce.out.id);
+    context.node(
+        format!("node_{index}"),
+        op_type,
+        vec![input, axes_name],
+        vec![output],
+    );
+    let kept = reduce.out.shape.num_dims() == reduce.input.shape.num_dims();
+    context.int_attribute("keepdims", kept as i64);
+    Ok(())
 }
 
 /// Lower a reduction that returns only its winning indices.
