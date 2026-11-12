@@ -59,6 +59,31 @@ pub(super) fn lower(
         lower_reduce(context, index, reduce, "ReduceMin")?;
         return Ok(true);
     }
+    if let NumericOperationIr::Clamp(clamp) = numeric {
+        let min_name = format!("node_{index}_min");
+        context.scalar_initializer(
+            min_name.clone(),
+            clamp.tensor.dtype,
+            clamp.min,
+            clamp.tensor.id,
+        )?;
+        let max_name = format!("node_{index}_max");
+        context.scalar_initializer(
+            max_name.clone(),
+            clamp.tensor.dtype,
+            clamp.max,
+            clamp.tensor.id,
+        )?;
+        let input = context.tensor_name(clamp.tensor.id);
+        let output = context.tensor_name(clamp.out.id);
+        context.node(
+            format!("node_{index}"),
+            "Clip",
+            vec![input, min_name, max_name],
+            vec![output],
+        );
+        return Ok(true);
+    }
     if let NumericOperationIr::ArgMax(reduce) = numeric {
         lower_arg(context, index, reduce, "ArgMax")?;
         return Ok(true);

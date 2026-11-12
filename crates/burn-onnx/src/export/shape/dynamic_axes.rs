@@ -219,6 +219,9 @@ impl AxisTracker {
             NumericOperationIr::Abs(operation) | NumericOperationIr::Neg(operation) => {
                 self.same_axes(&operation.input, &operation.out)
             }
+            NumericOperationIr::Clamp(operation) => {
+                self.same_axes(&operation.tensor, &operation.out)
+            }
             NumericOperationIr::Pad(operation) => {
                 for (axis, &(before, after)) in operation.padding.iter().enumerate() {
                     if before == 0 && after == 0 {
