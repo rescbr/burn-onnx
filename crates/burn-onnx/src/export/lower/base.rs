@@ -100,6 +100,42 @@ pub(super) fn lower(
             );
             Ok(true)
         }
+        BaseOperationIr::SwapDims(swap) => {
+            let input = context.tensor_name(swap.input.id);
+            let output = context.tensor_name(swap.out.id);
+            context.node(
+                format!("node_{index}"),
+                "Transpose",
+                vec![input],
+                vec![output],
+            );
+            let rank = swap.out.shape.num_dims();
+            context.ints_attribute(
+                "perm",
+                (0..rank).map(|axis| {
+                    if axis == swap.dim1 {
+                        swap.dim2
+                    } else if axis == swap.dim2 {
+                        swap.dim1
+                    } else {
+                        axis
+                    }
+                }),
+            );
+            Ok(true)
+        }
+        BaseOperationIr::Permute(permute) => {
+            let input = context.tensor_name(permute.input.id);
+            let output = context.tensor_name(permute.out.id);
+            context.node(
+                format!("node_{index}"),
+                "Transpose",
+                vec![input],
+                vec![output],
+            );
+            context.ints_attribute("perm", permute.axes.iter().copied());
+            Ok(true)
+        }
         BaseOperationIr::Zeros(creation) => {
             lower_creation(context, index, creation, 0)?;
             Ok(true)
