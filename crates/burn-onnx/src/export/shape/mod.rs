@@ -810,6 +810,13 @@ fn shape_operations(graph: &GraphIr) -> impl Iterator<Item = ShapeOperation<'_>>
                 source: Some(&op.input),
                 output: &op.out,
             }),
+            OperationIr::BaseFloat(BaseOperationIr::Expand(op))
+            | OperationIr::BaseInt(BaseOperationIr::Expand(op))
+            | OperationIr::BaseBool(BaseOperationIr::Expand(op)) => Some(ShapeOperation {
+                index,
+                source: Some(&op.input),
+                output: &op.out,
+            }),
             OperationIr::NumericFloat(_, NumericOperationIr::Full(op))
             | OperationIr::NumericInt(_, NumericOperationIr::Full(op)) => Some(ShapeOperation {
                 index,

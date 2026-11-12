@@ -37,6 +37,18 @@ pub(super) fn lower(
             );
             Ok(true)
         }
+        BaseOperationIr::Expand(expand) => {
+            let shape_name = context.shape_input(index, expand.out.id)?;
+            let input = context.tensor_name(expand.input.id);
+            let output = context.tensor_name(expand.out.id);
+            context.node(
+                format!("node_{index}"),
+                "Expand",
+                vec![input, shape_name],
+                vec![output],
+            );
+            Ok(true)
+        }
         BaseOperationIr::Cat(cat) => {
             let inputs = cat
                 .tensors
