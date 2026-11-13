@@ -387,14 +387,11 @@ mod tests {
             .find(|node| node.op_type == "Concat" && node.output.contains(ends))
             .expect("ends is assembled by a Concat");
         assert!(
-            ends_concat
-                .input
+            ends_concat.input.iter().any(|part| model
+                .graph
+                .node
                 .iter()
-                .any(|part| model
-                    .graph
-                    .node
-                    .iter()
-                    .any(|node| node.op_type == "Gather" && node.output.contains(part))),
+                .any(|node| node.op_type == "Gather" && node.output.contains(part))),
             "ends derives from a Shape -> Gather chain"
         );
     }
@@ -666,51 +663,77 @@ mod tests {
     }
 
     #[test]
-    fn lowers_log_softmax_and_softmin_with_axis_attribute() {
-        for (operation, op_type) in [
-            (
-                ActivationOperationIr::LogSoftmax(DimOpIr {
-                    input: tensor(1),
-                    out: TensorIr::uninit(TensorId::new(2), Shape::new([2, 3]), DType::F32),
-                    axis: 0,
-                }),
-                "LogSoftmax",
-            ),
-            (
-                ActivationOperationIr::Softmin(DimOpIr {
-                    input: tensor(1),
-                    out: TensorIr::uninit(TensorId::new(2), Shape::new([2, 3]), DType::F32),
-                    axis: 1,
-                }),
-                "Softmin",
-            ),
-        ] {
-            let graph = GraphIr::new(vec![OperationIr::Activation(operation)]);
-            let graph = ResolvedExportGraph {
-                graph,
-                shapes: vec![],
-                dynamic_axes: vec![],
-            };
-            let runtime_inputs = graph.graph.inputs.clone();
-            let model = export_graph_with_bindings_and_opset(
-                &graph,
-                &BTreeMap::new(),
-                &runtime_inputs,
-                &HashMap::new(),
-                Opset::default(),
-            )
-            .unwrap();
-            let model = ModelProto::parse_from_bytes(model.as_bytes()).unwrap();
+    fn lowers_log_softmax_with_axis_attribute() {
+        let graph = GraphIr::new(vec![OperationIr::Activation(
+            ActivationOperationIr::LogSoftmax(DimOpIr {
+                input: tensor(1),
+                out: TensorIr::uninit(TensorId::new(2), Shape::new([2, 3]), DType::F32),
+                axis: 0,
+            }),
+        )]);
+        let graph = ResolvedExportGraph {
+            graph,
+            shapes: vec![],
+            dynamic_axes: vec![],
+        };
+        let runtime_inputs = graph.graph.inputs.clone();
+        let model = export_graph_with_bindings_and_opset(
+            &graph,
+            &BTreeMap::new(),
+            &runtime_inputs,
+            &HashMap::new(),
+            Opset::default(),
+        )
+        .unwrap();
+        let model = ModelProto::parse_from_bytes(model.as_bytes()).unwrap();
 
-            assert_eq!(model.graph.node.len(), 1);
-            assert_eq!(model.graph.node[0].op_type, op_type);
-            assert!(
-                model.graph.node[0]
-                    .attribute
-                    .iter()
-                    .any(|attribute| attribute.name == "axis")
-            );
-        }
+        assert_eq!(model.graph.node.len(), 1);
+        assert_eq!(model.graph.node[0].op_type, "LogSoftmax");
+        assert!(
+            model.graph.node[0]
+                .attribute
+                .iter()
+                .any(|attribute| attribute.name == "axis")
+        );
+    }
+
+    #[test]
+    fn lowers_softmin_as_neg_then_softmax() {
+        let graph = GraphIr::new(vec![OperationIr::Activation(
+            ActivationOperationIr::Softmin(DimOpIr {
+                input: tensor(1),
+                out: TensorIr::uninit(TensorId::new(2), Shape::new([2, 3]), DType::F32),
+                axis: 1,
+            }),
+        )]);
+        let graph = ResolvedExportGraph {
+            graph,
+            shapes: vec![],
+            dynamic_axes: vec![],
+        };
+        let runtime_inputs = graph.graph.inputs.clone();
+        let model = export_graph_with_bindings_and_opset(
+            &graph,
+            &BTreeMap::new(),
+            &runtime_inputs,
+            &HashMap::new(),
+            Opset::default(),
+        )
+        .unwrap();
+        let model = ModelProto::parse_from_bytes(model.as_bytes()).unwrap();
+
+        assert_eq!(model.graph.node.len(), 2);
+        assert_eq!(model.graph.node[0].op_type, "Neg");
+        assert_eq!(model.graph.node[1].op_type, "Softmax");
+        assert_eq!(model.graph.node[0].output, ["node_0_neg_out"]);
+        assert_eq!(model.graph.node[1].input, ["node_0_neg_out"]);
+        assert_eq!(model.graph.node[1].output, ["tensor_2"]);
+        assert!(
+            model.graph.node[1]
+                .attribute
+                .iter()
+                .any(|attribute| attribute.name == "axis" && attribute.i == 1)
+        );
     }
 
     #[test]

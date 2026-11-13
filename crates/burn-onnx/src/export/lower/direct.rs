@@ -28,12 +28,13 @@ pub(super) fn lower(
         OperationIr::Activation(ActivationOperationIr::LogSoftmax(operation)) => {
             Some((operation, "LogSoftmax"))
         }
-        OperationIr::Activation(ActivationOperationIr::Softmin(operation)) => {
-            Some((operation, "Softmin"))
-        }
         _ => None,
     } {
         lower_normalized_exponential(context, index, operation, op_type)?;
+        return Ok(true);
+    }
+    if let OperationIr::Activation(ActivationOperationIr::Softmin(operation)) = operation {
+        lower_softmin(context, index, operation)?;
         return Ok(true);
     }
     if let Some(cast) = match operation {
@@ -77,8 +78,34 @@ pub(super) fn lower(
     Ok(true)
 }
 
-/// Lower a per-axis normalized exponential (`Softmax`, `LogSoftmax`,
-/// `Softmin`) whose opset 13+ form carries the axis as an attribute.
+/// Lower `Softmin` as `Neg` followed by `Softmax` (`softmin(x) = softmax(-x)`);
+/// ONNX has no `Softmin` operator — it never existed in any opset.
+fn lower_softmin(
+    context: &mut LoweringContext<'_>,
+    index: usize,
+    operation: &DimOpIr,
+) -> Result<(), ExportError> {
+    let input = context.tensor_name(operation.input.id);
+    let negated = format!("node_{index}_neg_out");
+    let output = context.tensor_name(operation.out.id);
+    context.node(
+        format!("node_{index}_neg"),
+        "Neg",
+        vec![input],
+        vec![negated.clone()],
+    );
+    context.node(
+        format!("node_{index}"),
+        "Softmax",
+        vec![negated],
+        vec![output],
+    );
+    context.int_attribute("axis", operation.axis as i64);
+    Ok(())
+}
+
+/// Lower a per-axis normalized exponential (`Softmax`, `LogSoftmax`)
+/// whose opset 13+ form carries the axis as an attribute.
 fn lower_normalized_exponential(
     context: &mut LoweringContext<'_>,
     index: usize,

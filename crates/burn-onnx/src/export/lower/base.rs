@@ -195,8 +195,7 @@ fn lower_slice(
                     return Err(ExportError::DynamicShapeLost {
                         tensor: slice.out.id,
                         axis,
-                        reason: "dynamic-length reverse slice has no representable bounds"
-                            .into(),
+                        reason: "dynamic-length reverse slice has no representable bounds".into(),
                     });
                 }
                 if dynamic_axis.is_some() {
@@ -215,7 +214,8 @@ fn lower_slice(
         return Ok(());
     };
 
-    let dimensions = resolved.expect("dynamic axis comes from the resolution");    let mut starts: Vec<String> = Vec::with_capacity(slice.ranges.len());
+    let dimensions = resolved.expect("dynamic axis comes from the resolution");
+    let mut starts: Vec<String> = Vec::with_capacity(slice.ranges.len());
     let mut ends: Vec<String> = Vec::with_capacity(slice.ranges.len());
     for axis in 0..slice.ranges.len() {
         let prefix = format!("node_{index}_bounds_{axis}");
@@ -245,7 +245,12 @@ fn lower_slice(
     let axes: Vec<i64> = (0..slice.ranges.len() as i64).collect();
     let steps: Vec<i64> = slice.ranges.iter().map(|range| range.step as i64).collect();
     let starts_name = format!("node_{index}_starts");
-    context.node(starts_name.clone(), "Concat", starts, vec![starts_name.clone()]);
+    context.node(
+        starts_name.clone(),
+        "Concat",
+        starts,
+        vec![starts_name.clone()],
+    );
     context.int_attribute("axis", 0);
     let ends_name = format!("node_{index}_ends");
     context.node(ends_name.clone(), "Concat", ends, vec![ends_name.clone()]);

@@ -647,20 +647,22 @@ fn validate_shape_sensitive_operations(
                 OperationIr::BaseFloat(BaseOperationIr::Slice(validation))
                 | OperationIr::BaseInt(BaseOperationIr::Slice(validation))
                 | OperationIr::BaseBool(BaseOperationIr::Slice(validation)),
-            // r42b: a varying slice bound is allowed when the sliced axis's
-            // OUTPUT dimension varies with it (a dynamic-length prefix slice,
-            // e.g. positions[0..t]); the resolver will emit a Shape-derived
-            // `ends` for that axis. Varying bounds with an equal output dim
-            // (a sliding window) stay unrepresentable.
+                // r42b: a varying slice bound is allowed when the sliced axis's
+                // OUTPUT dimension varies with it (a dynamic-length prefix slice,
+                // e.g. positions[0..t]); the resolver will emit a Shape-derived
+                // `ends` for that axis. Varying bounds with an equal output dim
+                // (a sliding window) stay unrepresentable.
             ) if sample.ranges != validation.ranges => {
                 let unrepresentable = sample
                     .ranges
                     .iter()
                     .zip(&validation.ranges)
                     .zip(sample.out.shape.iter().zip(validation.out.shape.iter()))
-                    .any(|((sample_range, validation_range), (&sample_dim, &validation_dim))| {
-                        sample_range != validation_range && sample_dim == validation_dim
-                    });
+                    .any(
+                        |((sample_range, validation_range), (&sample_dim, &validation_dim))| {
+                            sample_range != validation_range && sample_dim == validation_dim
+                        },
+                    );
                 if unrepresentable {
                     let axis = sample
                         .ranges

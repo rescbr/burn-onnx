@@ -111,10 +111,18 @@ impl<'a> LoweringContext<'a> {
         let (source, axis) = match dimension {
             ShapeExpr::Static(_) | ShapeExpr::Infer => return Ok(None),
             ShapeExpr::InputDim { input, axis }
-            | ShapeExpr::TensorDim { tensor: input, axis } => (self.tensor_name(*input), *axis),
+            | ShapeExpr::TensorDim {
+                tensor: input,
+                axis,
+            } => (self.tensor_name(*input), *axis),
         };
         let shape_name = format!("{prefix}_source_shape");
-        self.node(shape_name.clone(), "Shape", vec![source], vec![shape_name.clone()]);
+        self.node(
+            shape_name.clone(),
+            "Shape",
+            vec![source],
+            vec![shape_name.clone()],
+        );
         let indices = format!("{prefix}_axis");
         self.i64_initializer(indices.clone(), &[axis as i64]);
         let gathered = format!("{prefix}_dim");
