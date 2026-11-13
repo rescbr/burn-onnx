@@ -2010,3 +2010,57 @@ fn dynamic_resnet18_matches_burn_at_runtime_shape() {
     let actual = run_ort(model.as_bytes(), [3, 3, 48, 56], runtime_values);
     actual.assert_approx_eq::<f32>(&expected, Tolerance::rel_abs(1.0e-3, 1.0e-5));
 }
+
+#[derive(Module, Debug)]
+struct MeanDim1;
+
+impl MeanDim1 {
+    fn forward(&self, input: Tensor<2>) -> Tensor<2> {
+        input.mean_dim(1)
+    }
+}
+
+#[test]
+fn reduce_mean_matches_burn() {
+    let device = Device::default();
+    let input_values = vec![3.0f32, -2.0, 7.0, 7.0, 5.0, 9.0, -1.0, 4.0];
+    let input = Tensor::<2>::from_data(TensorData::new(input_values.clone(), [2, 4]), &device);
+    let expected = MeanDim1.forward(input.clone()).into_data();
+    let model = OnnxExporter::new()
+        .export(&MeanDim1, input, MeanDim1::forward)
+        .unwrap();
+
+    let actual = run_ort(model.as_bytes(), [2, 4], input_values);
+    actual.assert_approx_eq::<f32>(&expected, Tolerance::rel_abs(RTOL, ATOL));
+}
+
+#[test]
+fn dynamic_reduce_mean_matches_burn_at_runtime_shape() {
+    let device = Device::default();
+    let sample = Tensor::<1, Int>::arange(0..12, &device)
+        .float()
+        .reshape([3, 4]);
+    let validation = Tensor::<1, Int>::arange(0..20, &device)
+        .float()
+        .reshape([5, 4]);
+    let specs = [InputSpec::new([
+        AxisSpec::dynamic("batch"),
+        AxisSpec::Static,
+    ])];
+
+    let model = OnnxExporter::new()
+        .export_dynamic(&MeanDim1, sample, validation, &specs, MeanDim1::forward)
+        .unwrap();
+
+    let runtime_input = Tensor::<1, Int>::arange(0..28, &device)
+        .float()
+        .reshape([7, 4]);
+    let runtime_values = runtime_input
+        .clone()
+        .into_data()
+        .try_to_vec::<f32>()
+        .unwrap();
+    let expected = MeanDim1.forward(runtime_input).into_data();
+    let actual = run_ort(model.as_bytes(), [7, 4], runtime_values);
+    actual.assert_approx_eq::<f32>(&expected, Tolerance::rel_abs(RTOL, ATOL));
+}
