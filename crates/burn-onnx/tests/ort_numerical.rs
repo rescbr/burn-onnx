@@ -2010,3 +2010,51 @@ fn dynamic_resnet18_matches_burn_at_runtime_shape() {
     let actual = run_ort(model.as_bytes(), [3, 3, 48, 56], runtime_values);
     actual.assert_approx_eq::<f32>(&expected, Tolerance::rel_abs(1.0e-3, 1.0e-5));
 }
+
+#[derive(Module, Debug)]
+struct SoftmaxFamily;
+
+impl SoftmaxFamily {
+    fn forward(&self, input: Tensor<2>) -> (Tensor<2>, Tensor<2>, Tensor<2>) {
+        (
+            burn::tensor::activation::softmax(input.clone(), 1),
+            burn::tensor::activation::log_softmax(input.clone(), 1),
+            burn::tensor::activation::softmin(input, 1),
+        )
+    }
+}
+
+#[test]
+fn softmax_family_matches_burn() {
+    let device = Device::default();
+    // Mixed-sign values so softmin visibly differs from softmax.
+    let input_values = vec![1.0f32, -2.0, 3.0, -1.0, 0.5, -4.0];
+    let input = Tensor::<2>::from_data(TensorData::new(input_values.clone(), [2, 3]), &device);
+    let (expected_softmax, expected_log_softmax, expected_softmin) =
+        SoftmaxFamily.forward(input.clone());
+    let model = OnnxExporter::new()
+        .export(&SoftmaxFamily, input, SoftmaxFamily::forward)
+        .unwrap();
+
+    let mut session = Session::builder(ort_environment())
+        .unwrap()
+        .commit_from_memory(model.as_bytes())
+        .unwrap();
+    let outputs = session
+        .run(ort::inputs![
+            OrtTensor::from_array(([2, 3], input_values)).unwrap()
+        ])
+        .unwrap();
+    for (output, expected) in [
+        (&outputs[0], expected_softmax),
+        (&outputs[1], expected_log_softmax),
+        (&outputs[2], expected_softmin),
+    ] {
+        let (shape, values) = output.try_extract_tensor::<f32>().unwrap();
+        TensorData::new(
+            values.to_vec(),
+            shape.iter().map(|&dim| dim as usize).collect::<Vec<_>>(),
+        )
+        .assert_approx_eq::<f32>(&expected.into_data(), Tolerance::rel_abs(RTOL, ATOL));
+    }
+}
