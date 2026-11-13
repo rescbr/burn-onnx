@@ -1063,6 +1063,11 @@ fn dynamic_slice_rejects_ambiguous_clamped_bounds() {
     // bounds from a genuinely open range. The bounds differ between captures,
     // so the shape-sensitive check rejects the slice before dynamic-axis
     // analysis runs.
+    // Burn normalizes every range before capture. For example, it clamps `..5`
+    // to `0..3` and `0..4` here. The bounds differ between captures but the
+    // output dimension varies with them, so the shape-derived-ends lowering
+    // permits the varying bounds; the slice is still rejected later by
+    // dynamic-axis analysis, which cannot recover the intended bounds.
     let sample = Tensor::<1>::zeros([3], &device);
     let validation = Tensor::<1>::zeros([4], &device);
     let specs = [InputSpec::new([AxisSpec::dynamic("length")])];
@@ -1077,7 +1082,7 @@ fn dynamic_slice_rejects_ambiguous_clamped_bounds() {
     assert!(matches!(
         result,
         Err(ExportError::DynamicShapeLost { reason, .. })
-            if reason.contains("varying slice bounds")
+            if reason.contains("intended bounds cannot be recovered")
     ));
 }
 
@@ -2009,4 +2014,59 @@ fn dynamic_resnet18_matches_burn_at_runtime_shape() {
 
     let actual = run_ort(model.as_bytes(), [3, 3, 48, 56], runtime_values);
     actual.assert_approx_eq::<f32>(&expected, Tolerance::rel_abs(1.0e-3, 1.0e-5));
+}
+
+#[derive(Module, Debug)]
+struct FlattenDynamic;
+
+impl FlattenDynamic {
+    fn forward(&self, input: Tensor<2>) -> Tensor<1> {
+        input.reshape([-1])
+    }
+}
+
+// NOTE: the shape-derived `ends` lowering for dynamic-length slices is only
+// reachable through internally constructed graphs (see the unit test
+// `lowers_dynamic_slice_with_shape_derived_ends`). Through `export_dynamic`,
+// any slice of a tensor with a dynamic axis is rejected ("intended bounds
+// cannot be recovered"), and a slice of a static tensor cannot have varying
+// bounds, so there is no burn-level program whose capture reaches it.
+
+#[test]
+fn dynamic_reshape_matches_burn_at_both_trace_shapes() {
+    let device = Device::default();
+    let sample = Tensor::<1, Int>::arange(0..12, &device)
+        .float()
+        .reshape([3, 4]);
+    let validation = Tensor::<1, Int>::arange(0..28, &device)
+        .float()
+        .reshape([7, 4]);
+    let specs = [InputSpec::new([
+        AxisSpec::dynamic("t"),
+        AxisSpec::Static,
+    ])];
+
+    let model = OnnxExporter::new()
+        .export_dynamic(
+            &FlattenDynamic,
+            sample,
+            validation,
+            &specs,
+            FlattenDynamic::forward,
+        )
+        .unwrap();
+
+    for (length, values) in [(3usize, 12usize), (7, 28)] {
+        let runtime_input = Tensor::<1, Int>::arange(0..values as i64, &device)
+            .float()
+            .reshape([length, 4]);
+        let runtime_values = runtime_input
+            .clone()
+            .into_data()
+            .try_to_vec::<f32>()
+            .unwrap();
+        let expected = FlattenDynamic.forward(runtime_input).into_data();
+        let actual = run_ort(model.as_bytes(), [length as i64, 4], runtime_values);
+        actual.assert_approx_eq::<f32>(&expected, Tolerance::default());
+    }
 }
