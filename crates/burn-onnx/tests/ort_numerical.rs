@@ -2010,3 +2010,43 @@ fn dynamic_resnet18_matches_burn_at_runtime_shape() {
     let actual = run_ort(model.as_bytes(), [3, 3, 48, 56], runtime_values);
     actual.assert_approx_eq::<f32>(&expected, Tolerance::rel_abs(1.0e-3, 1.0e-5));
 }
+
+#[derive(Module, Debug)]
+struct MaxMinDim;
+
+impl MaxMinDim {
+    fn forward(&self, input: Tensor<3>) -> (Tensor<3>, Tensor<3>) {
+        (input.clone().max_dim(1), input.min_dim(1))
+    }
+}
+
+#[test]
+fn reduce_max_min_match_burn() {
+    let device = Device::default();
+    let input = Tensor::<1, Int>::arange(0..24, &device)
+        .float()
+        .reshape([2, 3, 4]);
+    let input_values = input.clone().into_data().try_to_vec::<f32>().unwrap();
+    let (expected_max, expected_min) = MaxMinDim.forward(input.clone());
+    let model = OnnxExporter::new()
+        .export(&MaxMinDim, input, MaxMinDim::forward)
+        .unwrap();
+
+    let mut session = Session::builder(ort_environment())
+        .unwrap()
+        .commit_from_memory(model.as_bytes())
+        .unwrap();
+    let outputs = session
+        .run(ort::inputs![
+            OrtTensor::from_array(([2, 3, 4], input_values)).unwrap()
+        ])
+        .unwrap();
+    for (output, expected) in [(&outputs[0], expected_max), (&outputs[1], expected_min)] {
+        let (shape, values) = output.try_extract_tensor::<f32>().unwrap();
+        TensorData::new(
+            values.to_vec(),
+            shape.iter().map(|&dim| dim as usize).collect::<Vec<_>>(),
+        )
+        .assert_approx_eq::<f32>(&expected.into_data(), Tolerance::default());
+    }
+}
