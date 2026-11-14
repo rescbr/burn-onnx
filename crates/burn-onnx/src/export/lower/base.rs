@@ -9,7 +9,7 @@ use burn::backend::ir::{
 };
 use burn::backend::tensor::IndexingUpdateOp;
 
-use crate::export::ExportError;
+use crate::export::{ExportError, ShapeExpr};
 
 use super::{context::LoweringContext, onnx_dtype_parts, scalar_tensor};
 
@@ -49,7 +49,7 @@ pub(super) fn lower(
             Ok(true)
         }
         BaseOperationIr::Slice(slice) => {
-            lower_slice(context, index, slice);
+            lower_slice(context, index, slice)?;
             Ok(true)
         }
         BaseOperationIr::Select(select) => {
@@ -123,7 +123,103 @@ fn lower_indices(
     Ok(output)
 }
 
-fn lower_slice(context: &mut LoweringContext<'_>, index: usize, slice: &SliceOpIr) {
+fn lower_slice(
+    context: &mut LoweringContext<'_>,
+    index: usize,
+    slice: &SliceOpIr,
+) -> Result<(), ExportError> {
+    let resolved = context
+        .resolved_dimensions(index, slice.out.id)
+        .map(|dimensions| dimensions.to_vec());
+    // Note: an axis whose resolved output dimension is dynamic (a
+    // dynamic-length slice, e.g. positions[0..t]) must carry a runtime
+    // `ends` operand — `start + dimension` via a Shape/Gather chain, the
+    // same mechanism as `shape_input` — instead of the concrete bound
+    // captured on the sample trace.
+    let mut dynamic_axis: Option<usize> = None;
+    if let Some(dimensions) = &resolved {
+        for (axis, dimension) in dimensions.iter().enumerate() {
+            if matches!(
+                dimension,
+                ShapeExpr::InputDim { .. } | ShapeExpr::TensorDim { .. }
+            ) {
+                if slice.ranges.get(axis).is_some_and(|range| range.step < 0) {
+                    return Err(ExportError::DynamicShapeLost {
+                        tensor: slice.out.id,
+                        axis,
+                        reason: "dynamic-length reverse slice has no representable bounds"
+                            .into(),
+                    });
+                }
+                if dynamic_axis.is_some() {
+                    return Err(ExportError::DynamicShapeLost {
+                        tensor: slice.out.id,
+                        axis,
+                        reason: "slice varies on more than one axis".into(),
+                    });
+                }
+                dynamic_axis = Some(axis);
+            }
+        }
+    }
+    let Some(dynamic_axis) = dynamic_axis else {
+        lower_static_slice(context, index, slice);
+        return Ok(());
+    };
+
+    let dimensions = resolved.expect("dynamic axis comes from the resolution");    let mut starts: Vec<String> = Vec::with_capacity(slice.ranges.len());
+    let mut ends: Vec<String> = Vec::with_capacity(slice.ranges.len());
+    for axis in 0..slice.ranges.len() {
+        let prefix = format!("node_{index}_bounds_{axis}");
+        let start = slice.ranges[axis].start as i64;
+        starts.push(format!("{prefix}_start"));
+        context.i64_initializer(format!("{prefix}_start"), &[start]);
+        if axis == dynamic_axis {
+            let dimension = dimensions.get(axis).expect("axis within resolution");
+            let end = context
+                .dimension_scalar(&prefix, dimension, start)?
+                .ok_or_else(|| ExportError::DynamicShapeLost {
+                    tensor: slice.out.id,
+                    axis,
+                    reason: "dynamic slice bound lost its resolved dimension".into(),
+                })?;
+            ends.push(end);
+        } else {
+            let (_, end) = onnx_slice_bounds(
+                slice.ranges[axis].start,
+                slice.ranges[axis].end,
+                slice.ranges[axis].step,
+            );
+            ends.push(format!("{prefix}_end"));
+            context.i64_initializer(format!("{prefix}_end"), &[end]);
+        }
+    }
+    let axes: Vec<i64> = (0..slice.ranges.len() as i64).collect();
+    let steps: Vec<i64> = slice.ranges.iter().map(|range| range.step as i64).collect();
+    let starts_name = format!("node_{index}_starts");
+    context.node(starts_name.clone(), "Concat", starts, vec![starts_name.clone()]);
+    context.int_attribute("axis", 0);
+    let ends_name = format!("node_{index}_ends");
+    context.node(ends_name.clone(), "Concat", ends, vec![ends_name.clone()]);
+    context.int_attribute("axis", 0);
+    let axes_name = format!("node_{index}_axes");
+    context.i64_initializer(axes_name.clone(), &axes);
+    let steps_name = format!("node_{index}_steps");
+    context.i64_initializer(steps_name.clone(), &steps);
+
+    let input = context.tensor_name(slice.tensor.id);
+    let output = context.tensor_name(slice.out.id);
+    context.node(
+        format!("node_{index}"),
+        "Slice",
+        vec![input, starts_name, ends_name, axes_name, steps_name],
+        vec![output],
+    );
+    Ok(())
+}
+
+/// Original all-constant slice lowering (static bounds on every axis).
+fn lower_static_slice(context: &mut LoweringContext<'_>, index: usize, slice: &SliceOpIr) {
     let (starts, ends): (Vec<_>, Vec<_>) = slice
         .ranges
         .iter()

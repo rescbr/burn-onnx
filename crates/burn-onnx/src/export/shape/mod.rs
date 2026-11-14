@@ -639,18 +639,33 @@ fn validate_shape_sensitive_operations(
                 OperationIr::BaseFloat(BaseOperationIr::Slice(validation))
                 | OperationIr::BaseInt(BaseOperationIr::Slice(validation))
                 | OperationIr::BaseBool(BaseOperationIr::Slice(validation)),
+            // Note: a varying slice bound is allowed when the sliced axis's
+            // OUTPUT dimension varies with it (a dynamic-length prefix slice,
+            // e.g. positions[0..t]); the resolver will emit a Shape-derived
+            // `ends` for that axis. Varying bounds with an equal output dim
+            // (a sliding window) stay unrepresentable.
             ) if sample.ranges != validation.ranges => {
-                let axis = sample
+                let unrepresentable = sample
                     .ranges
                     .iter()
                     .zip(&validation.ranges)
-                    .position(|(sample, validation)| sample != validation)
-                    .unwrap_or(0);
-                return Err(ExportError::DynamicShapeLost {
-                    tensor: sample.out.id,
-                    axis,
-                    reason: format!("operation {index} has varying slice bounds"),
-                });
+                    .zip(sample.out.shape.iter().zip(validation.out.shape.iter()))
+                    .any(|((sample_range, validation_range), (&sample_dim, &validation_dim))| {
+                        sample_range != validation_range && sample_dim == validation_dim
+                    });
+                if unrepresentable {
+                    let axis = sample
+                        .ranges
+                        .iter()
+                        .zip(&validation.ranges)
+                        .position(|(sample, validation)| sample != validation)
+                        .unwrap_or(0);
+                    return Err(ExportError::DynamicShapeLost {
+                        tensor: sample.out.id,
+                        axis,
+                        reason: format!("operation {index} has varying slice bounds"),
+                    });
+                }
             }
             (
                 OperationIr::BaseFloat(BaseOperationIr::SliceAssign(sample_slice))
@@ -808,6 +823,13 @@ fn shape_operations(graph: &GraphIr) -> impl Iterator<Item = ShapeOperation<'_>>
             | OperationIr::BaseBool(BaseOperationIr::Reshape(op)) => Some(ShapeOperation {
                 index,
                 source: Some(&op.input),
+                output: &op.out,
+            }),
+            OperationIr::BaseFloat(BaseOperationIr::Slice(op))
+            | OperationIr::BaseInt(BaseOperationIr::Slice(op))
+            | OperationIr::BaseBool(BaseOperationIr::Slice(op)) => Some(ShapeOperation {
+                index,
+                source: Some(&op.tensor),
                 output: &op.out,
             }),
             OperationIr::NumericFloat(_, NumericOperationIr::Full(op))
