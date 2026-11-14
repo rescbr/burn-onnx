@@ -2010,3 +2010,25 @@ fn dynamic_resnet18_matches_burn_at_runtime_shape() {
     let actual = run_ort(model.as_bytes(), [3, 3, 48, 56], runtime_values);
     actual.assert_approx_eq::<f32>(&expected, Tolerance::rel_abs(1.0e-3, 1.0e-5));
 }
+
+#[derive(Module, Debug)]
+struct Recip;
+
+impl Recip {
+    fn forward(&self, input: Tensor<2>) -> Tensor<2> {
+        input.recip()
+    }
+}
+
+#[test]
+fn recip_matches_burn() {
+    let device = Device::default();
+    // Values bounded away from zero so the reciprocal is well-conditioned.
+    let input_values = vec![1.0f32, -2.0, 4.0, 0.5, -0.25, 8.0];
+    let input = Tensor::<2>::from_data(TensorData::new(input_values.clone(), [2, 3]), &device);
+    let expected = Recip.forward(input.clone()).into_data();
+    let model = OnnxExporter::new().export(&Recip, input, Recip::forward).unwrap();
+
+    let actual = run_ort(model.as_bytes(), [2, 3], input_values);
+    actual.assert_approx_eq::<f32>(&expected, Tolerance::rel_abs(RTOL, ATOL));
+}

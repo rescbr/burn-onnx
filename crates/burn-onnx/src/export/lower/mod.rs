@@ -314,7 +314,8 @@ mod tests {
     use super::*;
     use burn::backend::Shape;
     use burn::backend::ir::{
-        BinaryOpIr, GraphIr, NumericOperationIr, ReduceDimOpIr, ReduceDimWithIndicesOpIr,
+        BinaryOpIr, FloatOperationIr, GraphIr, NumericOperationIr, ReduceDimOpIr,
+        ReduceDimWithIndicesOpIr, UnaryOpIr,
     };
     use onnx_ir::ModelProto;
     use protobuf::Message;
@@ -426,6 +427,37 @@ mod tests {
                 .i,
             6
         );
+    }
+
+    #[test]
+    fn lowers_recip_as_reciprocal_node() {
+        let graph = GraphIr::new(vec![OperationIr::Float(
+            DType::F32,
+            FloatOperationIr::Recip(UnaryOpIr {
+                input: tensor(1),
+                out: tensor(2),
+            }),
+        )]);
+        let graph = ResolvedExportGraph {
+            graph,
+            shapes: vec![],
+            dynamic_axes: vec![],
+        };
+        let runtime_inputs = graph.graph.inputs.clone();
+        let model = export_graph_with_bindings_and_opset(
+            &graph,
+            &BTreeMap::new(),
+            &runtime_inputs,
+            &HashMap::new(),
+            Opset::default(),
+        )
+        .unwrap();
+        let model = ModelProto::parse_from_bytes(model.as_bytes()).unwrap();
+
+        assert_eq!(model.graph.node.len(), 1);
+        assert_eq!(model.graph.node[0].op_type, "Reciprocal");
+        assert_eq!(model.graph.node[0].input, ["tensor_1"]);
+        assert_eq!(model.graph.node[0].output, ["tensor_2"]);
     }
 
     #[test]

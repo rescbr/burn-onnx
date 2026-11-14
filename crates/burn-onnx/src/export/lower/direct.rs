@@ -19,6 +19,7 @@ pub(super) fn lower(
             FloatOperationIr::Exp(_) => "Exp",
             FloatOperationIr::Log(_) => "Log",
             FloatOperationIr::Sqrt(_) => "Sqrt",
+            FloatOperationIr::Recip(_) => "Reciprocal",
             FloatOperationIr::Tanh(_) => "Tanh",
             FloatOperationIr::Matmul(_) => "MatMul",
             _ => return Ok(false),
