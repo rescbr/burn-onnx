@@ -124,6 +124,9 @@ impl AxisTracker {
             OperationIr::Activation(
                 ActivationOperationIr::Relu(operation) | ActivationOperationIr::Sigmoid(operation),
             ) => self.same_axes(&operation.input, &operation.out),
+            OperationIr::Activation(ActivationOperationIr::Gelu(operation)) => {
+                self.same_axes(&operation.input, &operation.out)
+            }
             OperationIr::Module(operation) => self.transfer_module(operation),
             _ => {}
         }

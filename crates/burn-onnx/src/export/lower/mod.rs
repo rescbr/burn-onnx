@@ -314,7 +314,8 @@ mod tests {
     use super::*;
     use burn::backend::Shape;
     use burn::backend::ir::{
-        BinaryOpIr, GraphIr, NumericOperationIr, ReduceDimOpIr, ReduceDimWithIndicesOpIr,
+        ActivationOperationIr, BinaryOpIr, GraphIr, NumericOperationIr, ReduceDimOpIr,
+        ReduceDimWithIndicesOpIr, UnaryOpIr,
     };
     use onnx_ir::ModelProto;
     use protobuf::Message;
@@ -426,6 +427,45 @@ mod tests {
                 .i,
             6
         );
+    }
+
+    #[test]
+    fn lowers_gelu_as_erf_decomposition() {
+        let graph = GraphIr::new(vec![OperationIr::Activation(ActivationOperationIr::Gelu(
+            UnaryOpIr {
+                input: tensor(1),
+                out: tensor(2),
+            },
+        ))]);
+        let graph = ResolvedExportGraph {
+            graph,
+            shapes: vec![],
+            dynamic_axes: vec![],
+        };
+        let runtime_inputs = graph.graph.inputs.clone();
+        let model = export_graph_with_bindings_and_opset(
+            &graph,
+            &BTreeMap::new(),
+            &runtime_inputs,
+            &HashMap::new(),
+            Opset::default(),
+        )
+        .unwrap();
+        let model = ModelProto::parse_from_bytes(model.as_bytes()).unwrap();
+
+        let ops = model
+            .graph
+            .node
+            .iter()
+            .map(|node| node.op_type.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ops, ["Div", "Erf", "Add", "Mul", "Mul"]);
+        assert_eq!(model.graph.node[0].input, ["tensor_1", "node_0_sqrt2"]);
+        assert_eq!(model.graph.node[1].input, ["node_0_scaled"]);
+        assert_eq!(model.graph.node[2].input, ["node_0_erf", "node_0_one"]);
+        assert_eq!(model.graph.node[3].input, ["tensor_1", "node_0_gate"]);
+        assert_eq!(model.graph.node[4].input, ["node_0_gated", "node_0_half"]);
+        assert_eq!(model.graph.node[4].output, ["tensor_2"]);
     }
 
     #[test]

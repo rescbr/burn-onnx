@@ -2,7 +2,9 @@
 //!
 //! Input and output ordering is taken directly from [`burn::backend::ir::OperationIr`].
 
-use burn::backend::ir::{ActivationOperationIr, FloatOperationIr, IntOperationIr, OperationIr};
+use burn::backend::ir::{
+    ActivationOperationIr, FloatOperationIr, IntOperationIr, OperationIr, ScalarIr, UnaryOpIr,
+};
 
 use crate::export::ExportError;
 
@@ -14,6 +16,10 @@ pub(super) fn lower(
     index: usize,
     operation: &OperationIr,
 ) -> Result<bool, ExportError> {
+    if let OperationIr::Activation(ActivationOperationIr::Gelu(operation)) = operation {
+        lower_gelu(context, index, operation)?;
+        return Ok(true);
+    }
     let op_type = match operation {
         OperationIr::Float(_, operation) => match operation {
             FloatOperationIr::Exp(_) => "Exp",
@@ -41,4 +47,79 @@ pub(super) fn lower(
         .collect();
     context.node(format!("node_{index}"), op_type, inputs, outputs);
     Ok(true)
+}
+
+/// Lower `Gelu` via its exact erf form `0.5 * x * (1 + erf(x / sqrt(2)))`.
+///
+/// ONNX `Gelu` is opset-20 and the exporter pins opset 18, so the native
+/// node cannot be emitted yet; `Erf` is available from opset 13 onward.
+fn lower_gelu(
+    context: &mut LoweringContext<'_>,
+    index: usize,
+    operation: &UnaryOpIr,
+) -> Result<(), ExportError> {
+    let input = context.tensor_name(operation.input.id);
+    let output = context.tensor_name(operation.out.id);
+    let dtype = operation.input.dtype;
+
+    let sqrt2_name = format!("node_{index}_sqrt2");
+    context.scalar_initializer(
+        sqrt2_name.clone(),
+        dtype,
+        ScalarIr::Float(core::f64::consts::SQRT_2),
+        operation.input.id,
+    )?;
+    let scaled_name = format!("node_{index}_scaled");
+    context.node(
+        scaled_name.clone(),
+        "Div",
+        vec![input.clone(), sqrt2_name],
+        vec![scaled_name.clone()],
+    );
+
+    let erf_name = format!("node_{index}_erf");
+    context.node(
+        erf_name.clone(),
+        "Erf",
+        vec![scaled_name],
+        vec![erf_name.clone()],
+    );
+
+    let one_name = format!("node_{index}_one");
+    context.scalar_initializer(
+        one_name.clone(),
+        dtype,
+        ScalarIr::Float(1.0),
+        operation.input.id,
+    )?;
+    let gate_name = format!("node_{index}_gate");
+    context.node(
+        gate_name.clone(),
+        "Add",
+        vec![erf_name, one_name],
+        vec![gate_name.clone()],
+    );
+
+    let gated_name = format!("node_{index}_gated");
+    context.node(
+        gated_name.clone(),
+        "Mul",
+        vec![input, gate_name],
+        vec![gated_name.clone()],
+    );
+
+    let half_name = format!("node_{index}_half");
+    context.scalar_initializer(
+        half_name.clone(),
+        dtype,
+        ScalarIr::Float(0.5),
+        operation.input.id,
+    )?;
+    context.node(
+        format!("node_{index}"),
+        "Mul",
+        vec![gated_name, half_name],
+        vec![output],
+    );
+    Ok(())
 }

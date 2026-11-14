@@ -2010,3 +2010,31 @@ fn dynamic_resnet18_matches_burn_at_runtime_shape() {
     let actual = run_ort(model.as_bytes(), [3, 3, 48, 56], runtime_values);
     actual.assert_approx_eq::<f32>(&expected, Tolerance::rel_abs(1.0e-3, 1.0e-5));
 }
+
+#[derive(Module, Debug)]
+struct GeluActivation;
+
+impl GeluActivation {
+    fn forward(&self, input: Tensor<2>) -> Tensor<2> {
+        burn::tensor::activation::gelu(input)
+    }
+}
+
+#[test]
+fn gelu_matches_burn() {
+    let device = Device::default();
+    // Values spanning both sides of zero, including the erf-sensitive region.
+    let input_values = vec![
+        -4.0f32, -2.0, -1.0, -0.5, -0.1, 0.0, 0.1, 0.5, 1.0, 2.0, 3.5, 6.0,
+    ];
+    let input = Tensor::<2>::from_data(TensorData::new(input_values.clone(), [3, 4]), &device);
+    let expected = GeluActivation.forward(input.clone()).into_data();
+    let model = OnnxExporter::new()
+        .export(&GeluActivation, input, GeluActivation::forward)
+        .unwrap();
+
+    // The exported graph contains the erf decomposition, so this compares burn's
+    // gelu against ORT evaluating the same decomposition.
+    let actual = run_ort(model.as_bytes(), [3, 4], input_values);
+    actual.assert_approx_eq::<f32>(&expected, Tolerance::rel_abs(RTOL, ATOL));
+}
