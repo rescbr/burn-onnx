@@ -221,6 +221,8 @@ impl AxisTracker {
             NumericOperationIr::MeanDim(operation)
             | NumericOperationIr::SumDim(operation)
             | NumericOperationIr::ProdDim(operation)
+            | NumericOperationIr::MaxDim(operation)
+            | NumericOperationIr::MinDim(operation)
             | NumericOperationIr::ArgMax(operation)
             | NumericOperationIr::ArgMin(operation) => {
                 self.reduced_axes(&operation.input, &operation.out, operation.axis)
