@@ -2010,3 +2010,53 @@ fn dynamic_resnet18_matches_burn_at_runtime_shape() {
     let actual = run_ort(model.as_bytes(), [3, 3, 48, 56], runtime_values);
     actual.assert_approx_eq::<f32>(&expected, Tolerance::rel_abs(1.0e-3, 1.0e-5));
 }
+
+#[derive(Module, Debug)]
+struct SwapDims03;
+
+impl SwapDims03 {
+    fn forward(&self, input: Tensor<3>) -> Tensor<3> {
+        input.swap_dims(0, 2)
+    }
+}
+
+#[derive(Module, Debug)]
+struct PermuteAxes;
+
+impl PermuteAxes {
+    fn forward(&self, input: Tensor<4>) -> Tensor<4> {
+        input.permute([0, 3, 1, 2])
+    }
+}
+
+#[test]
+fn swap_dims_matches_burn() {
+    let device = Device::default();
+    let input = Tensor::<1, Int>::arange(0..24, &device)
+        .float()
+        .reshape([2, 3, 4]);
+    let input_values = input.clone().into_data().try_to_vec::<f32>().unwrap();
+    let expected = SwapDims03.forward(input.clone()).into_data();
+    let model = OnnxExporter::new()
+        .export(&SwapDims03, input, SwapDims03::forward)
+        .unwrap();
+
+    let actual = run_ort(model.as_bytes(), [2, 3, 4], input_values);
+    actual.assert_approx_eq::<f32>(&expected, Tolerance::default());
+}
+
+#[test]
+fn permute_matches_burn() {
+    let device = Device::default();
+    let input = Tensor::<1, Int>::arange(0..24, &device)
+        .float()
+        .reshape([1, 2, 3, 4]);
+    let input_values = input.clone().into_data().try_to_vec::<f32>().unwrap();
+    let expected = PermuteAxes.forward(input.clone()).into_data();
+    let model = OnnxExporter::new()
+        .export(&PermuteAxes, input, PermuteAxes::forward)
+        .unwrap();
+
+    let actual = run_ort(model.as_bytes(), [1, 2, 3, 4], input_values);
+    actual.assert_approx_eq::<f32>(&expected, Tolerance::default());
+}

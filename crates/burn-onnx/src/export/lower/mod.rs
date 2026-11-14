@@ -314,13 +314,22 @@ mod tests {
     use super::*;
     use burn::backend::Shape;
     use burn::backend::ir::{
-        BinaryOpIr, GraphIr, NumericOperationIr, ReduceDimOpIr, ReduceDimWithIndicesOpIr,
+        BaseOperationIr, BinaryOpIr, GraphIr, NumericOperationIr, PermuteOpIr, ReduceDimOpIr,
+        ReduceDimWithIndicesOpIr, SwapDimsOpIr,
     };
-    use onnx_ir::ModelProto;
+    use onnx_ir::{ModelProto, NodeProto};
     use protobuf::Message;
 
     fn tensor(id: u64) -> TensorIr {
         TensorIr::uninit(TensorId::new(id), Shape::new([2, 3]), DType::F32)
+    }
+
+    fn perm_attribute(node: &NodeProto) -> Vec<i64> {
+        node.attribute
+            .iter()
+            .find(|attribute| attribute.name == "perm")
+            .map(|attribute| attribute.ints.clone())
+            .unwrap_or_default()
     }
 
     #[test]
@@ -426,6 +435,75 @@ mod tests {
                 .i,
             6
         );
+    }
+
+    #[test]
+    fn lowers_swap_dims_as_transpose_with_swapped_perm() {
+        let input = tensor(1);
+        let output = TensorIr::uninit(TensorId::new(2), Shape::new([3, 2]), DType::F32);
+        let graph = GraphIr::new(vec![OperationIr::BaseFloat(BaseOperationIr::SwapDims(
+            SwapDimsOpIr {
+                input,
+                out: output,
+                dim1: 0,
+                dim2: 1,
+            },
+        ))]);
+        let graph = ResolvedExportGraph {
+            graph,
+            shapes: vec![],
+            dynamic_axes: vec![],
+        };
+        let runtime_inputs = graph.graph.inputs.clone();
+        let model = export_graph_with_bindings_and_opset(
+            &graph,
+            &BTreeMap::new(),
+            &runtime_inputs,
+            &HashMap::new(),
+            Opset::default(),
+        )
+        .unwrap();
+        let model = ModelProto::parse_from_bytes(model.as_bytes()).unwrap();
+
+        assert_eq!(model.graph.node.len(), 1);
+        assert_eq!(model.graph.node[0].op_type, "Transpose");
+        assert_eq!(model.graph.node[0].input, ["tensor_1"]);
+        assert_eq!(model.graph.node[0].output, ["tensor_2"]);
+        assert_eq!(perm_attribute(&model.graph.node[0]), [1, 0]);
+    }
+
+    #[test]
+    fn lowers_permute_as_transpose_with_verbatim_axes() {
+        let input = tensor(1);
+        let output = TensorIr::uninit(TensorId::new(2), Shape::new([2, 3]), DType::F32);
+        let graph = GraphIr::new(vec![OperationIr::BaseFloat(BaseOperationIr::Permute(
+            PermuteOpIr {
+                input,
+                out: output,
+                axes: vec![2, 0, 1],
+            },
+        ))]);
+        let graph = ResolvedExportGraph {
+            graph,
+            shapes: vec![],
+            dynamic_axes: vec![],
+        };
+        let runtime_inputs = graph.graph.inputs.clone();
+        let model = export_graph_with_bindings_and_opset(
+            &graph,
+            &BTreeMap::new(),
+            &runtime_inputs,
+            &HashMap::new(),
+            Opset::default(),
+        )
+        .unwrap();
+        let model = ModelProto::parse_from_bytes(model.as_bytes()).unwrap();
+
+        assert_eq!(model.graph.node.len(), 1);
+        assert_eq!(model.graph.node[0].op_type, "Transpose");
+        assert_eq!(model.graph.node[0].input, ["tensor_1"]);
+        assert_eq!(model.graph.node[0].output, ["tensor_2"]);
+        assert_eq!(perm_attribute(&model.graph.node[0]), [2, 0, 1]);
     }
 
     #[test]
