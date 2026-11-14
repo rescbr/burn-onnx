@@ -409,6 +409,13 @@ impl<'a> PairedTraceAnalysis<'a> {
         }
         candidates.dedup();
 
+        // Note: a dimension that did not vary between the two capture traces
+        // cannot depend on the dynamic input axis (their dynamic axes differ),
+        // so resolve it as static even when multiple derived source axes
+        // happen to share its value (e.g. unit batch/unsqueeze dims).
+        if sample_dim == validation_dim && !candidates.is_empty() {
+            return Ok(DimensionResolution::Resolved(ShapeExpr::Static(sample_dim)));
+        }
         match candidates.as_slice() {
             [candidate] => Ok(DimensionResolution::Resolved(candidate.clone())),
             [] if sample_dim == validation_dim => {
@@ -491,23 +498,14 @@ impl<'a> PairedTraceAnalysis<'a> {
         axis: usize,
         dimension: usize,
     ) -> Result<DimensionResolution, ExportError> {
-        if let Some(source) = operation.source {
-            let has_static_match = source
-                .shape
-                .iter()
-                .enumerate()
-                .any(|(source_axis, &value)| {
-                    value == dimension && !self.potentially_dynamic.contains(source.id, source_axis)
-                });
-            let has_dynamic_source =
-                source.shape.iter().enumerate().any(|(source_axis, _)| {
-                    self.potentially_dynamic.contains(source.id, source_axis)
-                });
-            return Ok(if has_static_match || !has_dynamic_source {
-                DimensionResolution::Resolved(ShapeExpr::Static(dimension))
-            } else {
-                DimensionResolution::Infer
-            });
+        if operation.source.is_some() {
+            // Note: `dimension` is equal across the two capture traces
+            // (resolve_equal_dimension is only reached when sample_dim ==
+            // validation_dim), so it cannot depend on the dynamic axis —
+            // resolve it as static rather than leaving it for element-count
+            // inference (multiple such dims, e.g. a 768 -> (3, 4, 64) head
+            // split, would otherwise be unresolvable).
+            return Ok(DimensionResolution::Resolved(ShapeExpr::Static(dimension)));
         }
 
         if aligned_static_input_dimension(
@@ -517,6 +515,16 @@ impl<'a> PairedTraceAnalysis<'a> {
             self.resolver.sample,
             self.resolver.inputs,
         ) || !has_dynamic_inputs(self.resolver.inputs)
+            || self.inputs.iter().all(|input| {
+                // Note: when every declared dynamic input axis differs
+                // between the two captures, an equal created dimension
+                // cannot be derived from any of them — it is static
+                // (e.g. ones_like(scores) with a unit batch dim).
+                input.spec.axes.iter().enumerate().all(|(axis, spec)| {
+                    !matches!(spec, AxisSpec::Dynamic { .. })
+                        || input.sample.shape.get(axis) != input.validation.shape.get(axis)
+                })
+            })
         {
             Ok(DimensionResolution::Resolved(ShapeExpr::Static(dimension)))
         } else {

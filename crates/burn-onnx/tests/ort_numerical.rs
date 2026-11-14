@@ -2010,3 +2010,68 @@ fn dynamic_resnet18_matches_burn_at_runtime_shape() {
     let actual = run_ort(model.as_bytes(), [3, 3, 48, 56], runtime_values);
     actual.assert_approx_eq::<f32>(&expected, Tolerance::rel_abs(1.0e-3, 1.0e-5));
 }
+
+#[derive(Module, Debug)]
+struct SplitHidden;
+
+impl SplitHidden {
+    fn forward(&self, input: Tensor<2>) -> Tensor<4> {
+        // 768 = 3 * 4 * 64; the split factors are equal across traces, so the
+        // resolver proves them static while the leading batch stays dynamic.
+        input.reshape([-1, 3, 4, 64])
+    }
+}
+
+#[test]
+fn resolver_static_dims_match_burn_at_both_trace_shapes() {
+    let device = Device::default();
+    let sample = Tensor::<1, Int>::arange(0..768, &device)
+        .float()
+        .reshape([1, 768]);
+    let validation = Tensor::<1, Int>::arange(0..2 * 768, &device)
+        .float()
+        .reshape([2, 768]);
+    let specs = [InputSpec::new([
+        AxisSpec::dynamic("batch"),
+        AxisSpec::Static,
+    ])];
+
+    let model = OnnxExporter::new()
+        .export_dynamic(
+            &SplitHidden,
+            sample,
+            validation,
+            &specs,
+            SplitHidden::forward,
+        )
+        .unwrap();
+
+    // The batch stays dynamic in the exported shape.
+    let proto = ModelProto::parse_from_bytes(model.as_bytes()).unwrap();
+    let output_shape = &proto.graph.output[0]
+        .type_
+        .as_ref()
+        .unwrap()
+        .tensor_type()
+        .shape
+        .dim;
+    assert_eq!(output_shape[0].dim_param(), "batch");
+
+    for batch in [1usize, 2, 5] {
+        let runtime_input = Tensor::<1, Int>::arange(0..(batch * 768) as i64, &device)
+            .float()
+            .reshape([batch, 768]);
+        let runtime_values = runtime_input
+            .clone()
+            .into_data()
+            .try_to_vec::<f32>()
+            .unwrap();
+        let expected = SplitHidden.forward(runtime_input).into_data();
+        let actual = run_ort(
+            model.as_bytes(),
+            [batch as i64, 768],
+            runtime_values,
+        );
+        actual.assert_approx_eq::<f32>(&expected, Tolerance::default());
+    }
+}
