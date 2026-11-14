@@ -2010,3 +2010,27 @@ fn dynamic_resnet18_matches_burn_at_runtime_shape() {
     let actual = run_ort(model.as_bytes(), [3, 3, 48, 56], runtime_values);
     actual.assert_approx_eq::<f32>(&expected, Tolerance::rel_abs(1.0e-3, 1.0e-5));
 }
+
+#[derive(Module, Debug)]
+struct ClampBounds;
+
+impl ClampBounds {
+    fn forward(&self, input: Tensor<2>) -> Tensor<2> {
+        input.clamp(-1.0, 5.0)
+    }
+}
+
+#[test]
+fn clamp_matches_burn() {
+    let device = Device::default();
+    // Values outside the bounds on both sides and inside them.
+    let input_values = vec![-10.0f32, -1.5, -1.0, 0.0, 2.5, 5.0, 7.0, 100.0];
+    let input = Tensor::<2>::from_data(TensorData::new(input_values.clone(), [2, 4]), &device);
+    let expected = ClampBounds.forward(input.clone()).into_data();
+    let model = OnnxExporter::new()
+        .export(&ClampBounds, input, ClampBounds::forward)
+        .unwrap();
+
+    let actual = run_ort(model.as_bytes(), [2, 4], input_values);
+    actual.assert_approx_eq::<f32>(&expected, Tolerance::rel_abs(RTOL, ATOL));
+}
