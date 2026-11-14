@@ -314,7 +314,8 @@ mod tests {
     use super::*;
     use burn::backend::Shape;
     use burn::backend::ir::{
-        BinaryOpIr, GraphIr, NumericOperationIr, ReduceDimOpIr, ReduceDimWithIndicesOpIr,
+        BaseOperationIr, BinaryOpIr, GraphIr, NumericOperationIr, ReduceDimOpIr,
+        ReduceDimWithIndicesOpIr, ShapeOpIr,
     };
     use onnx_ir::ModelProto;
     use protobuf::Message;
@@ -425,6 +426,56 @@ mod tests {
                 .unwrap()
                 .i,
             6
+        );
+    }
+
+    #[test]
+    fn lowers_expand_with_resolved_shape_input() {
+        let input = tensor(1);
+        let output = TensorIr::uninit(TensorId::new(2), Shape::new([2, 3]), DType::F32);
+        let graph = GraphIr::new(vec![OperationIr::BaseFloat(BaseOperationIr::Expand(
+            ShapeOpIr { input, out: output },
+        ))]);
+        let graph = ResolvedExportGraph {
+            graph,
+            shapes: vec![crate::export::resolved::ResolvedShape {
+                operation: 0,
+                tensor: TensorId::new(2),
+                dimensions: vec![
+                    crate::export::resolved::ShapeExpr::Static(2),
+                    crate::export::resolved::ShapeExpr::Static(3),
+                ],
+            }],
+            dynamic_axes: vec![],
+        };
+        let runtime_inputs = graph.graph.inputs.clone();
+        let model = export_graph_with_bindings_and_opset(
+            &graph,
+            &BTreeMap::new(),
+            &runtime_inputs,
+            &HashMap::new(),
+            Opset::default(),
+        )
+        .unwrap();
+        let model = ModelProto::parse_from_bytes(model.as_bytes()).unwrap();
+
+        assert_eq!(model.graph.node.len(), 1);
+        assert_eq!(model.graph.node[0].op_type, "Expand");
+        assert_eq!(model.graph.node[0].input, ["tensor_1", "node_0_shape"]);
+        assert_eq!(model.graph.node[0].output, ["tensor_2"]);
+        let shape = model
+            .graph
+            .initializer
+            .iter()
+            .find(|initializer| initializer.name == "node_0_shape")
+            .unwrap();
+        assert_eq!(shape.dims, [2]);
+        assert_eq!(
+            shape.raw_data.as_ref(),
+            [2_i64, 3_i64]
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<u8>>()
         );
     }
 

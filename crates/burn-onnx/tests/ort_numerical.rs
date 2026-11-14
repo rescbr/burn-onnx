@@ -2010,3 +2010,26 @@ fn dynamic_resnet18_matches_burn_at_runtime_shape() {
     let actual = run_ort(model.as_bytes(), [3, 3, 48, 56], runtime_values);
     actual.assert_approx_eq::<f32>(&expected, Tolerance::rel_abs(1.0e-3, 1.0e-5));
 }
+
+#[derive(Module, Debug)]
+struct ExpandChannels;
+
+impl ExpandChannels {
+    fn forward(&self, input: Tensor<2>) -> Tensor<2> {
+        input.expand([3, 5])
+    }
+}
+
+#[test]
+fn expand_matches_burn() {
+    let device = Device::default();
+    let input_values = vec![1.0f32, 2.0, 4.0];
+    let input = Tensor::<2>::from_data(TensorData::new(input_values.clone(), [3, 1]), &device);
+    let expected = ExpandChannels.forward(input.clone()).into_data();
+    let model = OnnxExporter::new()
+        .export(&ExpandChannels, input, ExpandChannels::forward)
+        .unwrap();
+
+    let actual = run_ort(model.as_bytes(), [3, 1], input_values);
+    actual.assert_approx_eq::<f32>(&expected, Tolerance::rel_abs(RTOL, ATOL));
+}
