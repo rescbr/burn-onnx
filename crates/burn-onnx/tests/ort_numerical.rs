@@ -2010,3 +2010,39 @@ fn dynamic_resnet18_matches_burn_at_runtime_shape() {
     let actual = run_ort(model.as_bytes(), [3, 3, 48, 56], runtime_values);
     actual.assert_approx_eq::<f32>(&expected, Tolerance::rel_abs(1.0e-3, 1.0e-5));
 }
+
+#[derive(Module, Debug)]
+struct CastIntToFloat;
+
+impl CastIntToFloat {
+    fn forward(&self, input: Tensor<2, Int>) -> Tensor<2> {
+        input.float() * 2.0
+    }
+}
+
+#[test]
+fn int_to_float_cast_matches_burn() {
+    let device = Device::default();
+    let input_values = vec![1i32, -2, 3, 4, 0, 5];
+    let input = Tensor::<2, Int>::from_ints([[1, -2, 3], [4, 0, 5]], &device);
+    let expected = CastIntToFloat.forward(input.clone()).into_data();
+    let model = OnnxExporter::new()
+        .export(&CastIntToFloat, input, CastIntToFloat::forward)
+        .unwrap();
+
+    let mut session = Session::builder(ort_environment())
+        .unwrap()
+        .commit_from_memory(model.as_bytes())
+        .unwrap();
+    let outputs = session
+        .run(ort::inputs![
+            OrtTensor::from_array(([2, 3], input_values)).unwrap()
+        ])
+        .unwrap();
+    let (shape, values) = outputs[0].try_extract_tensor::<f32>().unwrap();
+    let actual = TensorData::new(
+        values.to_vec(),
+        shape.iter().map(|&dim| dim as usize).collect::<Vec<_>>(),
+    );
+    actual.assert_approx_eq::<f32>(&expected, Tolerance::rel_abs(RTOL, ATOL));
+}

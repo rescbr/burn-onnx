@@ -2,11 +2,13 @@
 //!
 //! Input and output ordering is taken directly from [`burn::backend::ir::OperationIr`].
 
-use burn::backend::ir::{ActivationOperationIr, FloatOperationIr, IntOperationIr, OperationIr};
+use burn::backend::ir::{
+    ActivationOperationIr, BoolOperationIr, FloatOperationIr, IntOperationIr, OperationIr,
+};
 
 use crate::export::ExportError;
 
-use super::context::LoweringContext;
+use super::{context::LoweringContext, onnx_dtype_parts};
 
 /// Lower operations whose ONNX form has the same tensor inputs and outputs.
 pub(super) fn lower(
@@ -14,6 +16,17 @@ pub(super) fn lower(
     index: usize,
     operation: &OperationIr,
 ) -> Result<bool, ExportError> {
+    if let Some(cast) = match operation {
+        OperationIr::Int(IntOperationIr::IntoFloat(cast)) => Some(cast),
+        OperationIr::Bool(BoolOperationIr::IntoFloat(cast)) => Some(cast),
+        _ => None,
+    } {
+        let input = context.tensor_name(cast.input.id);
+        let output = context.tensor_name(cast.out.id);
+        context.node(format!("node_{index}"), "Cast", vec![input], vec![output]);
+        context.int_attribute("to", onnx_dtype_parts(cast.out.id, cast.out.dtype)? as i64);
+        return Ok(true);
+    }
     let op_type = match operation {
         OperationIr::Float(_, operation) => match operation {
             FloatOperationIr::Exp(_) => "Exp",

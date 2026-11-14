@@ -1,8 +1,9 @@
 //! Dynamic-axis dependency analysis for paired captures.
 
 use burn::backend::ir::{
-    ActivationOperationIr, BaseOperationIr, FloatOperationIr, GraphIr, IntOperationIr,
-    ModuleOperationIr, NumericOperationIr, OperationIr, SliceOpIr, TensorId, TensorIr,
+    ActivationOperationIr, BaseOperationIr, BoolOperationIr, FloatOperationIr, GraphIr,
+    IntOperationIr, ModuleOperationIr, NumericOperationIr, OperationIr, SliceOpIr, TensorId,
+    TensorIr,
 };
 use hashbrown::HashMap;
 
@@ -120,6 +121,10 @@ impl AxisTracker {
             OperationIr::Float(_, operation) => self.transfer_float(operation),
             OperationIr::Int(IntOperationIr::Matmul(operation)) => {
                 self.matmul(&operation.lhs, &operation.rhs, &operation.out)
+            }
+            OperationIr::Int(IntOperationIr::IntoFloat(operation))
+            | OperationIr::Bool(BoolOperationIr::IntoFloat(operation)) => {
+                self.same_axes(&operation.input, &operation.out)
             }
             OperationIr::Activation(
                 ActivationOperationIr::Relu(operation) | ActivationOperationIr::Sigmoid(operation),
